@@ -245,9 +245,12 @@ class MyModel:
         model_path = os.path.join(work_dir, 'model.pt')
         vocab_path = os.path.join(work_dir, 'vocab.pt')
         
+        # Determine map_location based on current device availability
+        map_location = model_instance.device
+        
         if os.path.exists(model_path) and os.path.exists(vocab_path):
             # Load vocabulary info
-            vocab_info = torch.load(vocab_path)
+            vocab_info = torch.load(vocab_path, map_location=map_location)
             
             # Create dataset with the vocabulary
             model_instance.dataset = type('DummyDataset', (), {})
@@ -258,11 +261,12 @@ class MyModel:
             
             # Create and load the model
             model_instance.model = CharLSTM(vocab_info['vocab_size'])
-            model_instance.model.load_state_dict(torch.load(model_path))
-            model_instance.model.to(model_instance.device)
+            # Load state_dict with map_location
+            model_instance.model.load_state_dict(torch.load(model_path, map_location=map_location))
+            model_instance.model.to(model_instance.device) # Move model to the correct device after loading
             model_instance.model.eval()  # Set to evaluation mode
             
-            print(f"Model loaded from {model_path}")
+            print(f"Model loaded from {model_path} to {model_instance.device}")
             print(f"Vocabulary loaded from {vocab_path}")
         else:
             # Fallback to dummy load
