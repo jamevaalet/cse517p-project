@@ -11,39 +11,38 @@ from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 
 class CharDataset(Dataset):
-    def __init__(self, texts, seq_length=64):
+    def __init__(self, texts, seq_length=64, vocab_info=None):
         self.seq_length = seq_length
-        
-        # Create character to index mapping
-        self.char_to_idx = {}
-        self.idx_to_char = {}
-        
-        # Process all text to build vocabulary
-        all_text = ''.join(texts)
-        chars = sorted(list(set(all_text)))
-        
-        for i, char in enumerate(chars):
-            self.char_to_idx[char] = i
-            self.idx_to_char[i] = char
-        
-        self.vocab_size = len(chars)
-        
-        # Create sequences and labels
+
+        if vocab_info:
+            self.char_to_idx = vocab_info['char_to_idx']
+            self.idx_to_char = vocab_info['idx_to_char']
+            self.vocab_size = vocab_info['vocab_size']
+        else:
+            self.char_to_idx = {}
+            self.idx_to_char = {}
+            all_text = ''.join(texts)
+            chars = sorted(list(set(all_text)))
+            for i, char in enumerate(chars):
+                self.char_to_idx[char] = i
+                self.idx_to_char[i] = char
+            self.vocab_size = len(chars)
+
         self.sequences = []
         self.labels = []
-        
         for text in texts:
-            for i in range(0, len(text) - seq_length):
-                seq = text[i:i+seq_length]
-                label = text[i+seq_length]
-                
-                # Convert to indices
-                seq_idx = [self.char_to_idx[c] for c in seq]
-                label_idx = self.char_to_idx[label]
-                
-                self.sequences.append(seq_idx)
-                self.labels.append(label_idx)
-    
+            current_text = text if not vocab_info else ''.join([c for c in text if c in self.char_to_idx])
+            for i in range(0, len(current_text) - seq_length):
+                seq = current_text[i:i+seq_length]
+                label = current_text[i+seq_length]
+                try:
+                    seq_idx = [self.char_to_idx[c] for c in seq]
+                    label_idx = self.char_to_idx[label]
+                    self.sequences.append(seq_idx)
+                    self.labels.append(label_idx)
+                except KeyError:
+                    pass
+
     def __len__(self):
         return len(self.sequences)
     
@@ -126,49 +125,79 @@ class MyModel:
                 f.write('{}\n'.format(p))
 
     def run_train(self, data, work_dir):
-        # Create dataset
-        seq_length = 64  # Sequence length hyperparameter
-        self.dataset = CharDataset(data, seq_length)
-        
-        # Create model
+        seq_length = 64
+        batch_size = 64
+        num_epochs = 10
+        learning_rate = 0.001
+
+        checkpoint_path = os.path.join(work_dir, 'checkpoint.pt')
+        start_epoch = 0
+        loaded_vocab_info = None
+
+        if os.path.exists(checkpoint_path):
+            print(f"Loading checkpoint from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            start_epoch = checkpoint['epoch'] + 1
+            loaded_vocab_info = {
+                'char_to_idx': checkpoint['char_to_idx'],
+                'idx_to_char': checkpoint['idx_to_char'],
+                'vocab_size': checkpoint['vocab_size']
+            }
+            seq_length = checkpoint.get('seq_length', seq_length)
+            print(f"Resuming training from epoch {start_epoch}")
+
+        self.dataset = CharDataset(data, seq_length, vocab_info=loaded_vocab_info)
         vocab_size = self.dataset.vocab_size
         self.model = CharLSTM(vocab_size)
         self.model.to(self.device)
-        
-        # Training parameters
-        batch_size = 64        # Change batch size here
-        num_epochs = 10        # Change number of epochs here
-        learning_rate = 0.001  # Change learning rate here
-        
-        # Create DataLoader
-        dataloader = DataLoader(self.dataset, batch_size=batch_size, shuffle=True)
-        
-        # Loss and optimizer
+
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        
-        # Training loop
-        for epoch in range(num_epochs):
+
+        if loaded_vocab_info and 'model_state_dict' in checkpoint and 'optimizer_state_dict' in checkpoint:
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            print("Model and optimizer states loaded.")
+
+        if start_epoch >= num_epochs:
+            print(f"Training already completed up to {start_epoch-1} epochs. Final model should be in {work_dir}.")
+            if not (os.path.exists(os.path.join(work_dir, 'model.pt')) and os.path.exists(os.path.join(work_dir, 'vocab.pt'))):
+                self.save(work_dir)
+            return
+
+        dataloader = DataLoader(self.dataset, batch_size=batch_size, shuffle=True)
+
+        for epoch in range(start_epoch, num_epochs):
+            self.model.train()
             total_loss = 0
             for batch_idx, (sequences, labels) in enumerate(dataloader):
                 sequences, labels = sequences.to(self.device), labels.to(self.device)
-                
-                # Forward pass
                 outputs = self.model(sequences)
                 loss = criterion(outputs, labels)
-                
-                # Backward pass and optimize
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                
                 total_loss += loss.item()
-                
                 if batch_idx % 100 == 0:
                     print(f'Epoch {epoch+1}/{num_epochs}, Batch {batch_idx}, Loss: {loss.item():.4f}')
-            
             avg_loss = total_loss / len(dataloader)
             print(f'Epoch {epoch+1}/{num_epochs}, Average Loss: {avg_loss:.4f}')
+
+            # Save checkpoint after each epoch
+            print(f'Saving checkpoint after epoch {epoch+1}...')
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'char_to_idx': self.dataset.char_to_idx,
+                'idx_to_char': self.dataset.idx_to_char,
+                'vocab_size': self.dataset.vocab_size,
+                'seq_length': self.dataset.seq_length
+            }, checkpoint_path)
+            print(f'Checkpoint saved to {checkpoint_path}')
+
+        print("Training complete. Saving final model...")
+        self.save(work_dir)
 
     def run_pred(self, data):
         preds = []
