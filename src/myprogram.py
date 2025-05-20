@@ -83,6 +83,42 @@ class MyModel:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     @classmethod
+    def clean_gutenberg_text(cls, text):
+        # Basic heuristic to remove Project Gutenberg headers/footers
+        start_markers = [
+            "*** START OF THIS PROJECT GUTENBERG EBOOK",
+            "*** START OF THE PROJECT GUTENBERG EBOOK",
+            "*END THE SMALL PRINT! FOR PUBLIC DOMAIN EBOOKS*",
+        ]
+        end_markers = [
+            "*** END OF THIS PROJECT GUTENBERG EBOOK",
+            "*** END OF THE PROJECT GUTENBERG EBOOK",
+            "End of the Project Gutenberg EBook",
+            "End of Project Gutenberg's",
+        ]
+
+        start_pos = 0
+        for marker in start_markers:
+            found_pos = text.find(marker)
+            if found_pos != -1:
+                start_pos = max(start_pos, found_pos + len(marker))
+        
+        end_pos = len(text)
+        for marker in end_markers:
+            found_pos = text.rfind(marker) # Search from the end
+            if found_pos != -1:
+                end_pos = min(end_pos, found_pos)
+        
+        cleaned_text = text[start_pos:end_pos].strip()
+        
+        # Further remove lines that are excessively long and likely metadata
+        lines = cleaned_text.splitlines()
+        short_lines = [line for line in lines if len(line) < 200 or ' ' in line] # Keep lines with spaces or short lines
+        cleaned_text = '\n'.join(short_lines)
+
+        return cleaned_text
+
+    @classmethod
     def load_training_data(cls):
         # Load multilingual data from specified sources
         data = []
@@ -102,9 +138,15 @@ class MyModel:
             if filename.endswith('.txt'):
                 with open(os.path.join(data_dir, filename), 'r', encoding='utf-8') as f:
                     text = f.read()
+                    # Clean Gutenberg boilerplate
+                    text = cls.clean_gutenberg_text(text)
                     # Simple preprocessing: normalize whitespace
                     text = ' '.join(text.split())
-                    data.append(text)
+                    if text: # Add text only if it's not empty after cleaning
+                        data.append(text)
+        
+        if not data:
+            data.append("This is a simple example text for training. It would be replaced with actual multilingual data.")
         
         return data
 
